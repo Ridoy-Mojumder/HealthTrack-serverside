@@ -12,7 +12,9 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(express.json());
 app.use(cors({
-  origin: 'http://localhost:5173', // Adjust according to your React app's port
+  origin: ['http://localhost:5173',
+    'https://health-track-186e2.web.app',
+    'https://health-track-186e2.firebaseapp.com'],
   credentials: true
 }));
 app.use(cookieParser());
@@ -32,28 +34,10 @@ const client = new MongoClient(uri, {
 });
 
 
-const verifyToken = (req, res, next) => {
-  const token = req.cookies?.token;
-  console.log('Value from token middleware', token);
-  if (!token) {
-      console.log('No token provided');
-      return res.status(401).send({ message: 'Not authorized' });
-  }
-
-  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-      if (err) {
-          console.log('Token verification failed', err);
-          return res.status(401).send({ message: 'Not authorized' });
-      }
-      console.log('Decoded token:', decoded);
-      req.user = decoded;
-      next();
-  });
-};
 
 const cookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
+  secure: process.env.NODE_ENV === "production" ? true : false,
   sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
 };
 //localhost:5000 and localhost:5173 are treated as same site.  so sameSite value must be strict in the development server.  in production, sameSite will be none
@@ -71,7 +55,7 @@ async function run() {
   try {
 
 
-    await client.connect();
+    // await client.connect();
     console.log("Connected to MongoDB Atlas");
 
     const db = client.db('healthTrack');
@@ -79,21 +63,45 @@ async function run() {
     const bannerCollection = db.collection('banner');
     const testCollection = db.collection('test');
     const bookingCollection = db.collection('booking');
+    const recommendationCollection = db.collection('recommendation');
 
 
     // jwt token api
 
     //creating Token
-    app.post("/jwt", logger, async (req, res) => {
+    app.post('/jwt', async (req, res) => {
       const user = req.body;
-      console.log("user for token", user);
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET);
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' })
+      res.send({ token });
+    })
 
-      res.cookie("token", token, cookieOptions).send({ success: true });
-    });
+    // middlewares 
+    const verifyToken = (req, res, next) => {
+      console.log('inside verify token', req.headers.authorization);
+      if (!req.headers.authorization) {
+        return res.status(401).send({ message: 'unauthorized access' });
+      }
+      const token = req.headers.authorization.split(' ')[1];
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: 'unauthorized access' })
+        }
+        req.decoded = decoded;
+        next();
+      })
+    }
 
-
-
+    // use verify admin after verifyToken
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await userCollection.findOne(query);
+      const isAdmin = user?.role === 'admin';
+      if (!isAdmin) {
+        return res.status(403).send({ message: 'forbidden access' });
+      }
+      next();
+    }
 
     //clearing Token
     app.post("/logout", async (req, res) => {
@@ -116,7 +124,7 @@ async function run() {
     // User API endpoints
 
     // Create a new user
-    app.post('/users', async (req, res) => {
+    app.post('/users', verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { email } = req.body;
         const existingUser = await userCollection.findOne({ email });
@@ -152,10 +160,8 @@ async function run() {
 
     // Get all users
     app.get('/users', async (req, res) => {
-
-      console.log(req.header)
       try {
-        const users = await userCollection.find({}).toArray();
+        const users = await userCollection.find().toArray();
 
         if (!users.length) {
           return res.status(404).json({ message: 'No users found' });
@@ -308,7 +314,7 @@ async function run() {
     // Get all banners
     app.get('/banners', async (req, res) => {
       try {
-        const banners = await bannerCollection.find({}).toArray();
+        const banners = await bannerCollection.find().toArray();
         res.json(banners);
       } catch (error) {
         console.error("Error fetching banners:", error);
@@ -365,31 +371,31 @@ async function run() {
 
     app.patch('/banners/:id/active', async (req, res) => {
       try {
-          const id = req.params.id;
-  
-          // First, deactivate all banners
-          await bannerCollection.updateMany({}, { $set: { active: false } });
-  
-          // Then, activate the specified banner
-          const filter = { _id: new ObjectId(id) };
-          const updateDoc = {
-              $set: {
-                  active: true
-              }
-          };
-          const result = await bannerCollection.updateOne(filter, updateDoc);
-  
-          if (result.modifiedCount === 0) {
-              return res.status(404).json({ message: 'Banner not found' });
+        const id = req.params.id;
+
+        // First, deactivate all banners
+        await bannerCollection.updateMany({}, { $set: { active: false } });
+
+        // Then, activate the specified banner
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            active: true
           }
-  
-          res.json({ message: 'Banner set as active successfully' });
+        };
+        const result = await bannerCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount === 0) {
+          return res.status(404).json({ message: 'Banner not found' });
+        }
+
+        res.json({ message: 'Banner set as active successfully' });
       } catch (error) {
-          console.error("Error setting active banner:", error);
-          res.status(500).json({ message: 'Error setting active banner', error });
+        console.error("Error setting active banner:", error);
+        res.status(500).json({ message: 'Error setting active banner', error });
       }
-  });
-  
+    });
+
 
 
 
@@ -404,7 +410,7 @@ async function run() {
     // Get all tests
     app.get('/tests', async (req, res) => {
       try {
-        const tests = await testCollection.find({}).toArray();
+        const tests = await testCollection.find().toArray();
         res.json(tests);
       } catch (error) {
         console.error("Error fetching tests:", error);
@@ -429,11 +435,20 @@ async function run() {
       }
     });
 
+    app.post('/tests', async (req, res) => {
+      try {
+        const tests = req.body;
+        const result = await testCollection.insertOne(tests);
+        res.json(result);
+      } catch (error) {
+        console.error("Error creating test:", error);
+        res.status(500).json({ message: 'Error creating test', error });
+      }
+    });
 
 
 
 
-    
     // Booking API endpoints
 
     // Create a new booking
@@ -522,75 +537,150 @@ async function run() {
 
 
 
-// Routes
-app.get('/bookings', async (req, res) => {
-  try {
-    const { email } = req.query;
-    const query = email ? { email } : {};
-    const bookings = await bookingCollection.find(query).toArray();
-    res.json(bookings);
-  } catch (error) {
-    console.error("Error fetching bookings:", error);
-    res.status(500).json({ message: 'Error fetching bookings', error });
-  }
-});
-
-app.post('/api/bookings', async (req, res) => {
-  try {
-    const newBooking = req.body;
-    const result = await bookingCollection.insertOne(newBooking);
-    res.json(result.ops[0]);
-  } catch (error) {
-    console.error("Error creating booking:", error);
-    res.status(500).json({ message: 'Error creating booking', error });
-  }
-});
-
-app.delete('/api/bookings/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const query = { _id: ObjectId(id) };
-    const result = await bookingCollection.deleteOne(query);
-
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ message: 'Booking not found' });
-    }
-
-    res.json({ message: 'Booking deleted successfully' });
-  } catch (error) {
-    console.error("Error deleting booking:", error);
-    res.status(500).json({ message: 'Error deleting booking', error });
-  }
-});
-
-app.patch('/api/bookings/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { testResultUrl } = req.body;
-    const filter = { _id: ObjectId(id) };
-    const updateDoc = {
-      $set: {
-        testResultUrl,
-        status: 'Delivered' // Assuming status update for delivered test result
+    // Routes
+    app.get('/bookings', async (req, res) => {
+      try {
+        const { email } = req.query;
+        const query = email ? { email } : {};
+        const bookings = await bookingCollection.find(query).toArray();
+        res.json(bookings);
+      } catch (error) {
+        console.error("Error fetching bookings:", error);
+        res.status(500).json({ message: 'Error fetching bookings', error });
       }
-    };
-    const result = await bookingCollection.updateOne(filter, updateDoc);
+    });
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ message: 'Booking not found' });
-    }
+    app.post('/api/bookings', async (req, res) => {
+      try {
+        const newBooking = req.body;
+        const result = await bookingCollection.insertOne(newBooking);
+        res.json(result.ops[0]);
+      } catch (error) {
+        console.error("Error creating booking:", error);
+        res.status(500).json({ message: 'Error creating booking', error });
+      }
+    });
 
-    res.json({ message: 'Test result submitted successfully' });
-  } catch (error) {
-    console.error("Error updating booking:", error);
-    res.status(500).json({ message: 'Error updating booking', error });
-  }
-});
+    app.delete('/api/bookings/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const query = { _id: ObjectId(id) };
+        const result = await bookingCollection.deleteOne(query);
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ message: 'Booking not found' });
+        }
+
+        res.json({ message: 'Booking deleted successfully' });
+      } catch (error) {
+        console.error("Error deleting booking:", error);
+        res.status(500).json({ message: 'Error deleting booking', error });
+      }
+    });
+
+    app.patch('/api/bookings/:id', async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { testResultUrl } = req.body;
+        const filter = { _id: ObjectId(id) };
+        const updateDoc = {
+          $set: {
+            testResultUrl,
+            status: 'Delivered' // Assuming status update for delivered test result
+          }
+        };
+        const result = await bookingCollection.updateOne(filter, updateDoc);
+
+        if (result.modifiedCount === 0) {
+          return res.status(404).json({ message: 'Booking not found' });
+        }
+
+        res.json({ message: 'Test result submitted successfully' });
+      } catch (error) {
+        console.error("Error updating booking:", error);
+        res.status(500).json({ message: 'Error updating booking', error });
+      }
+    });
+
+
+
+
+
+    // PDF Generation Endpoint
+    app.get('/test-results/:resultId/download', verifyToken, async (req, res) => {
+      try {
+        const { resultId } = req.params;
+
+        // Fetch test result details from MongoDB or another source
+        const booking = await bookingCollection.findOne({ _id: ObjectId(resultId) });
+
+        if (!booking) {
+          return res.status(404).json({ message: 'Test result not found' });
+        }
+
+        // Fetch user details from MongoDB (assuming it's related to the booking)
+        const user = await userCollection.findOne({ _id: ObjectId(booking.userId) });
+
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+
+        // Generate PDF document
+        const doc = new PDFDocument();
+        const pdfFileName = `${user.name}_test_result.pdf`; // Customize filename as needed
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdfFileName}"`);
+
+        doc.pipe(res);
+
+        // Example content for the PDF
+        doc.fontSize(16).text('Test Result Details', { align: 'center' });
+        doc.fontSize(12).text(`User Name: ${user.name}`);
+        doc.fontSize(12).text(`Test Name: ${booking.testName}`);
+        doc.fontSize(12).text(`Test Date: ${new Date(booking.date).toLocaleDateString()}`);
+        doc.fontSize(12).text(`Test Price: $${booking.price.toFixed(2)}`);
+        doc.fontSize(12).text(`Delivery Status: ${booking.status}`);
+
+        doc.end();
+        console.log(`PDF generated and sent for test result ID ${resultId}`);
+      } catch (error) {
+        console.error('Error generating PDF:', error);
+        res.status(500).json({ error: 'Failed to generate PDF' });
+      }
+    });
+
+
+
+
+
+
+    // Recommendation endpoints
+    app.get('/recommendations', async (req, res) => {
+      try {
+        const recommendations = await recommendationCollection.find({}).toArray();
+        res.json(recommendations);
+      } catch (error) {
+        console.error("Error fetching recommendations:", error);
+        res.status(500).json({ message: 'Error fetching recommendations', error });
+      }
+    });
+
+    app.post('/recommendations', async (req, res) => {
+      try {
+        const newRecommendation = req.body;
+        const result = await recommendationCollection.insertOne(newRecommendation);
+        res.status(201).json(result.ops[0]);
+      } catch (error) {
+        console.error("Error creating recommendation:", error);
+        res.status(500).json({ message: 'Error creating recommendation', error });
+      }
+    });
 
 
     await client.connect();
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
@@ -602,50 +692,6 @@ run().catch(console.dir);
 
 
 
-
-// PDF Generation Endpoint
-app.get('/test-results/:resultId/download', verifyToken, async (req, res) => {
-  try {
-    const { resultId } = req.params;
-
-    // Fetch test result details from MongoDB or another source
-    const booking = await bookingCollection.findOne({ _id: ObjectId(resultId) });
-
-    if (!booking) {
-      return res.status(404).json({ message: 'Test result not found' });
-    }
-
-    // Fetch user details from MongoDB (assuming it's related to the booking)
-    const user = await userCollection.findOne({ _id: ObjectId(booking.userId) });
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    // Generate PDF document
-    const doc = new PDFDocument();
-    const pdfFileName = `${user.name}_test_result.pdf`; // Customize filename as needed
-
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${pdfFileName}"`);
-
-    doc.pipe(res);
-
-    // Example content for the PDF
-    doc.fontSize(16).text('Test Result Details', { align: 'center' });
-    doc.fontSize(12).text(`User Name: ${user.name}`);
-    doc.fontSize(12).text(`Test Name: ${booking.testName}`);
-    doc.fontSize(12).text(`Test Date: ${new Date(booking.date).toLocaleDateString()}`);
-    doc.fontSize(12).text(`Test Price: $${booking.price.toFixed(2)}`);
-    doc.fontSize(12).text(`Delivery Status: ${booking.status}`);
-
-    doc.end();
-    console.log(`PDF generated and sent for test result ID ${resultId}`);
-  } catch (error) {
-    console.error('Error generating PDF:', error);
-    res.status(500).json({ error: 'Failed to generate PDF' });
-  }
-});
 
 
 
