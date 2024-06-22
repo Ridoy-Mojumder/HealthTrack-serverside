@@ -123,7 +123,23 @@ async function run() {
 
     // User API endpoints
 
-    
+    // Create a new user
+    app.post('/users', verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { email } = req.body;
+        const existingUser = await userCollection.findOne({ email });
+
+        if (existingUser) {
+          return res.status(400).json({ message: 'User already exists', insertId: null });
+        }
+
+        const result = await userCollection.insertOne(req.body);
+        res.status(201).json(result.ops[0]); // Return inserted document
+      } catch (error) {
+        console.error("Error inserting user:", error);
+        res.status(500).json({ message: 'Error inserting user', error });
+      }
+    });
 
     // Get a specific user by ID
     app.get('/users/:id', async (req, res) => {
