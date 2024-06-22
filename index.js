@@ -141,7 +141,22 @@ async function run() {
       }
     });
 
-  
+    // Get a specific user by ID
+    app.get('/users/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const user = await userCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json(user);
+      } catch (error) {
+        console.error("Error fetching user:", error);
+        res.status(500).json({ message: 'Error fetching user', error });
+      }
+    });
 
     // Get all users
     app.get('/users', async (req, res) => {
